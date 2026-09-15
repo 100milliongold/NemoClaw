@@ -355,9 +355,6 @@ test/e2e/
   that own the changed files. Each trusted push also selects the CPU-only
   `jetson-nvmap-gpu` proof. If no other retained E2E owns a changed file,
   `Relevant E2E` requires only the Jetson proof.
-  Push runs skip `llama-cpp-dgx-spark-plan` and
-  `llama-cpp-dgx-spark-qualification` because a push event cannot set their
-  required workflow dispatch flag.
   Runner, credential, evidence, and cleanup requirements remain job-specific.
   A maintainer can also dispatch the trusted `main` workflow against the latest
   commit from an open PR whose source branch is in `NVIDIA/NemoClaw`. The manual path validates the actor,
@@ -382,10 +379,7 @@ test/e2e/
   For a PR revision run, leave `jobs` and `targets` empty for all default-selected
   workflow E2E, catalogue profiles, shared tests, and registry targets.
   `Exact staging Brev Launchable` requires its separate opt-in.
-  Keep `allow_jetson_dispatch=false` and `allow_dgx_spark_runner_queue=false` for
-  the default selection. If the DGX Spark flag is `true`, GitHub can pause the
-  qualification job for the `approve-dgx-spark-image-qualification` environment.
-  An authorized environment reviewer must approve it before qualification starts.
+  Keep `allow_jetson_dispatch=false` for the default selection.
   Supported jobs and targets can also be selected individually.
   Refer to [NemoClaw E2E CI](../README.md).
 
@@ -417,11 +411,12 @@ test/e2e/
   to upload its evidence artifact.
 - `.github/workflows/platform-vitest-main.yaml` publishes `CI / Platform Compatibility`.
   It runs the Ubuntu 26.04 compatibility contracts and four full-suite Vitest shards on each of macOS and WSL.
-  Each macOS shard installs the pinned OpenShell formula.
-  Shard 1 has a 150-minute job timeout. Its live E2E has a 70-minute timeout, and every other step shares the remaining job time.
-  The other shards have 30 minutes.
+  Runs for the same ref are serialized and retained instead of being canceled by a newer push, preserving distinct-commit evidence on `main`.
+  Each macOS Vitest shard has a 30-minute budget.
+  The independent `macos-live-e2e` job installs pinned OpenShell and has a 150-minute budget, including its 70-minute live test and cleanup.
   WSL shard 1 has a 180-minute budget for root-required contracts and live E2E; the other shards have 90 minutes.
-  On shard 1, the workflow runs focused macOS and WSL live E2E only when the run tests `main` and Docker is available.
+  WSL stops Docker before non-live Vitest and starts it afterward only for the main-only live path.
+  The independent macOS job and WSL shard 1 run focused live E2E only when the run tests `main` and Docker is available.
   Otherwise, those live tests skip and the platform contracts remain as evidence.
   This conditional result is platform evidence, not `Release qualification`.
   The live steps give candidate test code the job-scoped `GITHUB_TOKEN` and repository `NVIDIA_INFERENCE_API_KEY`.
