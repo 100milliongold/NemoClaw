@@ -374,7 +374,6 @@ describe("managed gateway recovery controller", () => {
   ])(
     "enforces managed recovery for $label",
     async ({
-      label,
       recoverResults,
       expectedResult,
       expectedActions,
@@ -434,7 +433,6 @@ describe("managed gateway recovery controller", () => {
           name: "beta",
           agent: "openclaw",
           dashboardPort: 18789,
-          ...(label === "PID 1 supervisor" ? { openshellDriver: "podman" } : {}),
         });
         vi.spyOn(openshellRuntime, "captureOpenshell").mockReturnValue({
           status: 0,
