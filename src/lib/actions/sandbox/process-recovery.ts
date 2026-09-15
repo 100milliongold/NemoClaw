@@ -56,7 +56,7 @@ import {
   recoverMessagingHostForward,
   resolveSandboxDashboardPort,
   resolveSandboxHealthProbeUrl,
-  unverifiedForwardListenerRefusal,
+  nonOwnedForwardListenerRefusal,
   verifyHermesPortableLaunchForwards,
   type HermesPortableForwardRecoveryFailure,
   type HermesPortableForwardRecoveryContext,
@@ -64,6 +64,7 @@ import {
   type HermesPortableForwardRecoveryResult,
   type HermesPortableForwardRecoveryTimingEvidence,
   type HermesPortableForwardVerificationResult,
+  type OpenShellForwardObservationAdapterFactory,
   type PreparedHermesPortableForwardRecovery,
   type SandboxForwardListener,
 } from "./forward-recovery";
@@ -94,7 +95,7 @@ import {
   relaunchManagedSupervisorSession,
   usesManagedGatewayController,
 } from "./supervisor-relaunch";
-export type { SandboxForwardHealth } from "./forward-health";
+export type { SandboxForwardHealth } from "./forward-recovery";
 export { resolveSandboxDashboardPort, resolveSandboxLaunchForwardPorts } from "./forward-recovery";
 export {
   createHermesPortableForwardRecoveryInput,
@@ -1733,7 +1734,7 @@ function isHermesAgent(
   return !!agent && agent.name === "hermes";
 }
 
-/** Recover a classified dashboard listener without signalling an unverified owner. */
+/** Recover a classified dashboard listener without signalling a non-owned listener. */
 async function recoverUnhealthyDashboardForward(
   sandboxName: string,
   listener: SandboxForwardListener,
@@ -1741,11 +1742,17 @@ async function recoverUnhealthyDashboardForward(
     quiet,
     isWsl,
     runtimeSelection,
-  }: { quiet: boolean; isWsl?: boolean; runtimeSelection?: OpenShellRuntimeSelection },
+    ensureSandboxPortForwardImpl,
+  }: {
+    quiet: boolean;
+    isWsl?: boolean;
+    runtimeSelection?: OpenShellRuntimeSelection;
+    ensureSandboxPortForwardImpl: typeof ensureSandboxPortForward;
+  },
 ): Promise<{ recovered: boolean; failureDetail: string }> {
   if (!quiet) {
     console.log("");
-    if (listener === "unverified") {
+    if (listener === "foreign" || listener === "indeterminate") {
       console.log(
         `  Dashboard port forward to '${sandboxName}' is held by a listener whose ownership NemoClaw cannot prove.`,
       );
@@ -1754,9 +1761,9 @@ async function recoverUnhealthyDashboardForward(
       console.log("  Re-establishing...");
     }
   }
-  if (listener === "unverified") {
+  if (listener === "foreign" || listener === "indeterminate") {
     console.error(
-      unverifiedForwardListenerRefusal(sandboxName, resolveSandboxDashboardPort(sandboxName)),
+      nonOwnedForwardListenerRefusal(sandboxName, resolveSandboxDashboardPort(sandboxName)),
     );
     return {
       recovered: false,
@@ -1764,7 +1771,7 @@ async function recoverUnhealthyDashboardForward(
     };
   }
   return {
-    recovered: await ensureSandboxPortForward(sandboxName, { isWsl, runtimeSelection }),
+    recovered: await ensureSandboxPortForwardImpl(sandboxName, { isWsl, runtimeSelection }),
     failureDetail: "the primary dashboard/API host forward could not be re-established",
   };
 }
@@ -1797,6 +1804,9 @@ async function checkAndRecoverSandboxProcessesWithoutHostLock(
     onRecoveryFailureLayer,
     probeTiming,
     runtimeSelection,
+    ensureSandboxPortForwardImpl = ensureSandboxPortForward,
+    describeSandboxForwardListenerImpl = describeSandboxForwardListener,
+    forwardAdapterForAuthority,
     portableSupervisorEnvironment,
   }: {
     quiet?: boolean;
@@ -1815,11 +1825,12 @@ async function checkAndRecoverSandboxProcessesWithoutHostLock(
     onRecoveryFailureLayer?: (layer: GatewayRestartFailureLayer | null, detail?: string) => void;
     probeTiming?: ProcessRecoveryProbeTiming;
     runtimeSelection?: OpenShellRuntimeSelection;
+    ensureSandboxPortForwardImpl?: typeof ensureSandboxPortForward;
+    describeSandboxForwardListenerImpl?: typeof describeSandboxForwardListener;
+    forwardAdapterForAuthority?: OpenShellForwardObservationAdapterFactory;
     portableSupervisorEnvironment?: NodeJS.ProcessEnv;
   } = {},
 ) {
-  const measure = <T>(stage: "processes" | "forward", operation: () => T): T =>
-    probeTiming ? probeTiming.measure(stage, operation) : operation();
   const measureAsync = <T>(
     stage: "processes" | "forward",
     operation: () => Promise<T>,
@@ -1873,8 +1884,9 @@ async function checkAndRecoverSandboxProcessesWithoutHostLock(
     // Gateway is alive but the host-side forward can still be dead or
     // owned by another sandbox. Probe and re-establish only when
     // necessary so the live-and-healthy path stays a no-op.
-    const forwardListener = measure("forward", () =>
-      describeSandboxForwardListener(sandboxName, {
+    const forwardListener = await measureAsync("forward", () =>
+      describeSandboxForwardListenerImpl(sandboxName, {
+        forwardAdapterForAuthority,
         isWsl: isWslOverride,
         runtimeSelection,
       }),
@@ -1887,6 +1899,7 @@ async function checkAndRecoverSandboxProcessesWithoutHostLock(
             quiet,
             isWsl: isWslOverride,
             runtimeSelection,
+            ensureSandboxPortForwardImpl,
           }),
         );
       const dashboardForwardRecovered = await measureAsync("forward", () =>
@@ -2200,7 +2213,7 @@ async function checkAndRecoverSandboxProcessesWithoutHostLock(
       if (finalizationFailure) return finalizationFailure;
     }
     const forwardRecovered = await measureAsync("forward", () =>
-      ensureSandboxPortForward(sandboxName, {
+      ensureSandboxPortForwardImpl(sandboxName, {
         afterSuccess: confirmRelaunchedManagedHealthForForward ?? undefined,
         beforeStart: confirmRelaunchedManagedHealthForForward ?? undefined,
         isWsl: isWslOverride,
@@ -2304,10 +2317,15 @@ export async function checkAndRecoverSandboxProcesses(
     onRecoveryFailureLayer?: (layer: GatewayRestartFailureLayer | null, detail?: string) => void;
     probeTiming?: ProcessRecoveryProbeTiming;
     runtimeSelection?: OpenShellRuntimeSelection;
+    ensureSandboxPortForwardImpl?: typeof ensureSandboxPortForward;
+    describeSandboxForwardListenerImpl?: typeof describeSandboxForwardListener;
+    forwardAdapterForAuthority?: OpenShellForwardObservationAdapterFactory;
+    withLifecycleLock?: typeof withSandboxLifecycleLock;
     portableSupervisorEnvironment?: NodeJS.ProcessEnv;
   } = {},
 ) {
-  return withSandboxLifecycleLock(sandboxName, () =>
-    checkAndRecoverSandboxProcessesWithoutHostLock(sandboxName, options),
+  const { withLifecycleLock = withSandboxLifecycleLock, ...recoveryOptions } = options;
+  return withLifecycleLock(sandboxName, () =>
+    checkAndRecoverSandboxProcessesWithoutHostLock(sandboxName, recoveryOptions),
   );
 }
